@@ -5259,21 +5259,30 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           <div>
             <h2 style="margin:0">全局提示词 <em id="setGlobalPromptState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              给所有 <code style="font-family:var(--mono,monospace)">/v1</code> 对话注入一段网关自己的系统提示词。「追加」保留客户端提示词并插在开头，「替换」删掉客户端 system/developer 后只留这一条。留空时「追加/替换」使用内置默认提示词。默认「透传」，不改写任何客户端内容。
+              五个模式并列、只能选一个。<b>透传</b>不改写任何客户端内容；<b>追加</b>保留客户端提示词并把网关正文插在开头；<b>全部替换</b>删掉客户端 system/developer 只留网关正文（正文留空用内置默认）。<b>精确替换</b>把系统提示词里的 A 逐字换成 B；<b>整段替换</b>把包含 A 的那个段落整段换成 B。后两个只动 system/developer，其余讯息原样保留。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <select id="setGlobalPromptMode" style="min-width:150px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+            <select id="setGlobalPromptMode" onchange="syncPromptModeUI()" style="min-width:170px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
               <option value="passthrough">透传（不改写）</option>
               <option value="append">追加到 system</option>
-              <option value="custom">替换 system</option>
+              <option value="custom">全部替换</option>
+              <option value="replace_exact">精确替换（A =&gt; B）</option>
+              <option value="replace_paragraph">整段替换（含 A 段落 =&gt; B）</option>
             </select>
             <button onclick="saveGlobalPrompt(this)">保存</button>
           </div>
         </div>
-        <textarea id="setGlobalPromptText" rows="6" placeholder="留空使用内置默认提示词；写入后即时生效，不需要重启" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit;color:var(--fg);resize:vertical"></textarea>
+        <div id="setGlobalPromptBodyRow">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">网关提示词正文（「追加 / 全部替换」使用）</div>
+          <textarea id="setGlobalPromptText" rows="6" placeholder="留空使用内置默认提示词；写入后即时生效，不需要重启" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit;color:var(--fg);resize:vertical"></textarea>
+        </div>
+        <div id="setGlobalPromptRulesRow" style="margin-top:10px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">替换规则（「精确替换 / 整段替换」使用，一行一条：<code style="font-family:var(--mono,monospace)">A =&gt; B</code>；箭头右侧留空即删除）</div>
+          <textarea id="setGlobalPromptRules" rows="4" placeholder="精确替换例：one =&gt; two　｜　整段替换例：Tokens prefixed with @ =&gt; 以 @ 开头的标记是用户显式引用的路径。" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit;color:var(--fg);resize:vertical;font-family:var(--mono,monospace)"></textarea>
+        </div>
         <div style="font-size:12px;color:var(--dim);margin-top:6px">
-          只作用于对外对话；网页活跃、保活与签到等网关内部请求不注入。内容上限 64 KiB。
+          只作用于对外对话；网页活跃、保活与签到等网关内部请求不注入。正文上限 64 KiB，规则最多 50 条。
         </div>
       </section>
 
@@ -11446,6 +11455,24 @@ async function saveWinMaxHeight(btn){
 }
 // ==== 面板窗口限高结束 ====
 
+// ==== 全局提示词：五个模式并列、只选一个 ====
+const PROMPT_MODES = ['passthrough', 'append', 'custom', 'replace_exact', 'replace_paragraph'];
+const PROMPT_MODE_LABELS = {
+  passthrough: '透传', append: '追加', custom: '全部替换',
+  replace_exact: '精确替换', replace_paragraph: '整段替换',
+};
+// 用「网关正文」的模式与用「替换规则」的模式；透传两者都不用。
+const PROMPT_INJECT_MODES = ['append', 'custom'];
+const PROMPT_RULE_MODES = ['replace_exact', 'replace_paragraph'];
+function syncPromptModeUI(){
+  const el = document.getElementById('setGlobalPromptMode');
+  const mode = (el && PROMPT_MODES.indexOf(el.value) >= 0) ? el.value : 'passthrough';
+  const bodyRow = document.getElementById('setGlobalPromptBodyRow');
+  const rulesRow = document.getElementById('setGlobalPromptRulesRow');
+  if(bodyRow) bodyRow.style.display = PROMPT_INJECT_MODES.indexOf(mode) >= 0 ? '' : 'none';
+  if(rulesRow) rulesRow.style.display = PROMPT_RULE_MODES.indexOf(mode) >= 0 ? '' : 'none';
+}
+
 async function loadSettings(showToast){
   try {
     const data = await getJSON('/settings');
@@ -11693,16 +11720,20 @@ async function loadSettings(showToast){
           ? 'var(--accent2)' : 'var(--dim)';
       }
       const promptCfg = (data.prompt && typeof data.prompt === 'object') ? data.prompt : {};
-      const promptMode = ['passthrough', 'append', 'custom'].indexOf(promptCfg.mode) >= 0
+      const promptMode = PROMPT_MODES.indexOf(promptCfg.mode) >= 0
         ? promptCfg.mode : 'passthrough';
       const promptModeInput = document.getElementById('setGlobalPromptMode');
       if(promptModeInput) promptModeInput.value = promptMode;
       const promptTextInput = document.getElementById('setGlobalPromptText');
       if(promptTextInput) promptTextInput.value = promptCfg.text || '';
+      const promptRulesInput = document.getElementById('setGlobalPromptRules');
+      if(promptRulesInput) promptRulesInput.value = Array.isArray(promptCfg.replace_rules)
+        ? promptCfg.replace_rules.map(function(r){ return r.old + ' => ' + (r.new || ''); }).join('\n')
+        : '';
+      syncPromptModeUI();
       const promptState = document.getElementById('setGlobalPromptState');
       if(promptState){
-        promptState.textContent = promptMode === 'passthrough' ? '(透传)'
-          : (promptMode === 'append' ? '(追加)' : '(替换)');
+        promptState.textContent = '(' + PROMPT_MODE_LABELS[promptMode] + ')';
         promptState.style.color = promptMode === 'passthrough'
           ? 'var(--dim)' : 'var(--accent2)';
       }
@@ -12823,13 +12854,28 @@ async function saveDailyChatModel(btn){
 async function saveGlobalPrompt(btn){
   const modeEl = document.getElementById('setGlobalPromptMode');
   const textEl = document.getElementById('setGlobalPromptText');
-  const mode = (modeEl && modeEl.value) || 'passthrough';
+  const rulesEl = document.getElementById('setGlobalPromptRules');
+  const mode = (modeEl && PROMPT_MODES.indexOf(modeEl.value) >= 0) ? modeEl.value : 'passthrough';
+  // 正文与规则各自留着一起提交：切模式不该把另一个框里没显示的旧内容冲掉。
   const text = (textEl && textEl.value) || '';
+  // 一行一条「A => B」：按每行首个 => 切分，右侧留空即删除；无 => 的行忽略。
+  const rules = String((rulesEl && rulesEl.value) || '').split('\n')
+    .map(function(l){ return l.trim(); })
+    .filter(function(l){ return l.indexOf('=>') >= 0; })
+    .map(function(l){
+      const i = l.indexOf('=>');
+      return {old: l.slice(0, i).trim(), new: l.slice(i + 2).trim()};
+    })
+    .filter(function(r){ return r.old; });
+  if(PROMPT_RULE_MODES.indexOf(mode) >= 0 && rules.length === 0){
+    toast('这个模式需要至少一条替换规则（一行一条 A => B）', 'bad');
+    return;
+  }
   if(btn) btn.disabled = true;
   try {
-    await postJSON('/settings/save', {prompt: {mode: mode, text: text}});
-    toast(mode === 'passthrough' ? '已保存：全局提示词透传'
-        : ('已保存：全局提示词' + (mode === 'append' ? '追加到 system' : '替换 system')), 'ok');
+    await postJSON('/settings/save', {prompt: {mode: mode, text: text, replace_rules: rules}});
+    toast('已保存：全局提示词' + PROMPT_MODE_LABELS[mode]
+        + (PROMPT_RULE_MODES.indexOf(mode) >= 0 ? ('（' + rules.length + ' 条规则）') : ''), 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');

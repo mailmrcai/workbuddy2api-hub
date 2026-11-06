@@ -13114,32 +13114,42 @@ def prompt_mode_config():
     except Exception:
         cfg = None
     if not isinstance(cfg, dict):
-        cfg = {"mode": "passthrough", "file": "", "text": ""}
+        cfg = {"mode": "passthrough", "file": "", "text": "", "replace_rules": []}
     return cfg
 
 
 def apply_prompt_mode(messages):
     """Apply the configured prompt mode to one request's messages.
 
-    passthrough is the legacy behaviour (client system prompts ride through);
-    custom/append are opt-in. While the degrade window is active, passthrough
-    and append switch to the minimal neutral prompt; custom never degrades.
+    The five modes are parallel and mutually exclusive; each reads only its
+    own input. passthrough is the legacy no-op. custom/append inject the
+    gateway prompt body (prompt.text / prompt.file / built-in default).
+    replace_exact/replace_paragraph rewrite the client's system/developer
+    text in place from prompt.replace_rules and never inject anything.
+    Only passthrough/append enter the degrade window; the replace modes keep
+    the client system by design, so swapping it would contradict the choice.
     An unreadable prompt file fails open to passthrough rather than blocking.
     """
     cfg = prompt_mode_config()
-    mode = cfg.get("mode") or "passthrough"
+    mode = wb_prompt.normalize_mode(cfg.get("mode"))
+    rules = cfg.get("replace_rules") or []
     degraded = PROMPT_DEGRADE.active()
-    if mode in ("custom", "append"):
+    if mode in wb_prompt.INJECT_MODES:
+        # 只有注入型模式才读提示词正文；读不到就 fail open 原样送出。
         try:
             text = wb_prompt.load_prompt(mode, cfg.get("file"), cfg.get("text"))
         except Exception:
-            text = ""
-        if text:
-            return wb_prompt.apply_mode(messages, mode, text, degraded=degraded)
-        return messages
-    if degraded:
-        return wb_prompt.apply_mode(messages, mode, "", degraded=True)
-    return messages
+            return messages
+        if not text:
+            return messages
+    elif mode in wb_prompt.REPLACE_MODES:
+        if not rules:
+            return messages   # 选了替换模式但没写规则 = 不改写
+        text = ""
+    else:
+        text = ""
+    return wb_prompt.apply_mode(messages, mode, text, degraded=degraded,
+                                replace_rules=rules)
 
 
 def build_upstream_body(payload):

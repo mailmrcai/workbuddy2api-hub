@@ -1628,7 +1628,13 @@ PROMPT_DEFAULTS = {
     "mode": "passthrough",
     "file": "",
     "text": "",
+    "replace_rules": [],
 }
+#: 查找替换规则的条数与单字段字节上限（与 wb_prompt.REPLACE_RULES_MAX /
+#: REPLACE_FIELD_MAX 保持一致；wb_settings 是 stdlib-only 叶子模块，不反向
+#: import wb_prompt，故在此重复定义）。
+PROMPT_REPLACE_RULES_MAX = 50
+PROMPT_REPLACE_FIELD_MAX = 4096
 #: 在线全局提示词的上限。比文件路径宽松得多，但仍然有界：一个手滑的粘贴
 #: 不该让每个请求都多背几百 KB。
 PROMPT_TEXT_MAX = 64 * 1024
@@ -1642,8 +1648,10 @@ def validate_prompt_patch(raw):
             if not isinstance(value, str):
                 raise ValueError("prompt mode must be a string")
             mode = value.strip().lower()
-            if mode not in ("passthrough", "custom", "append"):
-                raise ValueError("prompt mode must be passthrough, custom or append")
+            if mode not in ("passthrough", "custom", "append",
+                            "replace_exact", "replace_paragraph"):
+                raise ValueError("prompt mode must be passthrough, custom, "
+                                 "append, replace_exact or replace_paragraph")
             out["mode"] = mode
         elif key == "file":
             if not isinstance(value, str):
@@ -1656,6 +1664,30 @@ def validate_prompt_patch(raw):
                 raise ValueError("prompt text cannot be more than %d bytes"
                                  % PROMPT_TEXT_MAX)
             out["text"] = value
+        elif key == "replace_rules":
+            if not isinstance(value, list):
+                raise ValueError("prompt replace_rules must be a list")
+            if len(value) > PROMPT_REPLACE_RULES_MAX:
+                raise ValueError("prompt replace_rules cannot be more than "
+                                 "%d rules" % PROMPT_REPLACE_RULES_MAX)
+            rules = []
+            for item in value:
+                if not isinstance(item, dict):
+                    raise ValueError("prompt replace rule must be an object")
+                old = item.get("old", item.get("from"))
+                new = item.get("new", item.get("to"))
+                if not isinstance(old, str) or not old:
+                    raise ValueError("prompt replace rule needs a non-empty "
+                                     "\"old\" string")
+                if not isinstance(new, str):
+                    raise ValueError("prompt replace rule needs a string \"new\"")
+                if (len(old.encode("utf-8")) > PROMPT_REPLACE_FIELD_MAX
+                        or len(new.encode("utf-8")) > PROMPT_REPLACE_FIELD_MAX):
+                    raise ValueError("prompt replace rule fields cannot be "
+                                     "more than %d bytes"
+                                     % PROMPT_REPLACE_FIELD_MAX)
+                rules.append({"old": old, "new": new})
+            out["replace_rules"] = rules
         else:
             raise ValueError("unknown prompt setting %r" % key)
     return out
@@ -1667,7 +1699,8 @@ def prompt_config(accounts_dir):
     stored = stored if isinstance(stored, dict) else {}
     mode = stored.get("mode", PROMPT_DEFAULTS["mode"])
     if not isinstance(mode, str) or mode.strip().lower() not in (
-            "passthrough", "custom", "append"):
+            "passthrough", "custom", "append",
+            "replace_exact", "replace_paragraph"):
         mode = PROMPT_DEFAULTS["mode"]
     else:
         mode = mode.strip().lower()
@@ -1677,7 +1710,22 @@ def prompt_config(accounts_dir):
     text = stored.get("text", PROMPT_DEFAULTS["text"])
     if not isinstance(text, str):
         text = PROMPT_DEFAULTS["text"]
-    return {"mode": mode, "file": file_path.strip(), "text": text}
+    # 宽松读：坏条目静默跳过（手改 settings.json 不该让整段配置失效）。
+    raw_rules = stored.get("replace_rules", PROMPT_DEFAULTS["replace_rules"])
+    rules = []
+    if isinstance(raw_rules, list):
+        for item in raw_rules:
+            if not isinstance(item, dict):
+                continue
+            old = item.get("old", item.get("from"))
+            new = item.get("new", item.get("to"))
+            if not isinstance(old, str) or not old or not isinstance(new, str):
+                continue
+            if len(rules) >= PROMPT_REPLACE_RULES_MAX:
+                break
+            rules.append({"old": old, "new": new})
+    return {"mode": mode, "file": file_path.strip(), "text": text,
+            "replace_rules": rules}
 
 
 def set_prompt_config(accounts_dir, cfg):
